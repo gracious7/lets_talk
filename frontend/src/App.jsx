@@ -3,7 +3,7 @@ import { io } from 'socket.io-client';
 import ConnectUser from './components/ConnectUser';
 import Dashboard from './components/Dashboard';
 
-const SERVER_URL = 'http://localhost:5000';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
 
 function App() {
   const [user, setUser] = useState(null); // { myNumber, username }
