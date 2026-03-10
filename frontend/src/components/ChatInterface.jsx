@@ -39,6 +39,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
   const remoteVideoRef = useRef(null);
   const messagesEndRef = useRef();
   const timerIntervalRef = useRef();
+  const fileInputRef = useRef(null);
 
   // Load chat history
   useEffect(() => {
@@ -54,6 +55,11 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
     const storageKey = `chat_history_${participants.join('_')}`;
     localStorage.setItem(storageKey, JSON.stringify(messages));
   }, [messages, myNumber, targetNumbers]);
+
+  // Auto-scroll to bottom on new message
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   // Audio track cleanup on unmount
   useEffect(() => {
@@ -305,6 +311,22 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
 
   const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
+  const handleImageUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64String = event.target.result;
+      socket.emit('send-message', { targetNumbers, message: base64String });
+      const newMsg = { text: base64String, sender: 'me', time: new Date() };
+      setMessages(prev => [...prev, newMsg]);
+      onMessageSent('Image');
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const sendMessage = (e) => {
     if (e) e.preventDefault();
     if (inputMessage.trim()) {
@@ -318,7 +340,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
   };
 
   return (
-    <div className="enter-chat-transition" style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', position: 'relative', overflow: 'hidden' }}>
+    <div className="enter-chat-transition" style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
       <div className="glass" style={{ height: '72px', display: 'flex', alignItems: 'center', padding: '0 1.5rem', justifyContent: 'space-between', zIndex: 100 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -326,7 +348,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
             <ChevronLeft size={24} />
           </button>
           <div style={{ width: '48px', height: '48px', borderRadius: '14px', background: 'var(--gradient-premium)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800', fontSize: '1.2rem', color: 'white' }}>
-            {chatName[0].toUpperCase()}
+            {chatName && chatName.length > 0 ? chatName[0].toUpperCase() : primaryTarget[0]}
           </div>
           <div>
             <h3 style={{ fontSize: '1.1rem', margin: 0, fontWeight: 700 }}>{chatName}</h3>
@@ -353,7 +375,11 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
       <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
         {messages.map((msg, i) => (
           <div key={i} className={`message-bubble ${msg.sender === 'me' ? 'message-mine' : 'message-theirs'}`}>
-            <div style={{ fontSize: '0.95rem', fontWeight: 400 }}>{msg.text}</div>
+            {msg.text && msg.text.startsWith('data:image/') ? (
+              <img src={msg.text} alt="Shared update" style={{ maxWidth: '100%', borderRadius: '12px', display: 'block' }} />
+            ) : (
+              <div style={{ fontSize: '0.95rem', fontWeight: 400, wordBreak: 'break-word' }}>{msg.text}</div>
+            )}
             <div style={{ fontSize: '0.6rem', opacity: 0.4, marginTop: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
               {new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
@@ -368,9 +394,10 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
           <button type="button" className="icon-btn" style={{ color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }} onClick={() => setShowEmojiPicker(!showEmojiPicker)}>
             <Smile size={26} />
           </button>
-          <button type="button" className="icon-btn" style={{ color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }}>
+          <button type="button" className="icon-btn" style={{ color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }} onClick={() => fileInputRef.current?.click()}>
             <Paperclip size={26} />
           </button>
+          <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageUpload} />
           <input 
             type="text" 
             className="input-premium" 

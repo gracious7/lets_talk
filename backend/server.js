@@ -6,6 +6,10 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
+app.get('/', (req, res) => {
+  res.send('Signaling server is running!');
+});
+
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -33,8 +37,23 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   // When frontend asks for a number
-  socket.on('register', (username) => {
-    const number = generateNumber();
+  socket.on('register', (data) => {
+    let username, previousNumber;
+    if (typeof data === 'string') {
+      username = data;
+    } else {
+      username = data.username;
+      previousNumber = data.previousNumber;
+    }
+
+    let number;
+    // Attempt to restore previous number if not taken
+    if (previousNumber && !numbersToSockets[previousNumber]) {
+      number = previousNumber;
+    } else {
+      number = generateNumber();
+    }
+
     users[socket.id] = { number, username };
     numbersToSockets[number] = socket.id;
     

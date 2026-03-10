@@ -3,46 +3,62 @@ import { io } from 'socket.io-client';
 import ConnectUser from './components/ConnectUser';
 import Dashboard from './components/Dashboard';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://lets-talk-w1xp.onrender.com';
 
 function App() {
-  const [user, setUser] = useState(null); // { myNumber, username }
-  const socketRef = useRef(null);
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem('lets_talk_user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  }); // { myNumber, username }
+  const [socket, setSocket] = useState(null);
 
-  const handleRegister = (username) => {
-    if (socketRef.current) return;
-    const socket = io(SERVER_URL);
-    socketRef.current = socket;
+  const connectSocket = (username, previousNumber = null) => {
+    if (socket) return;
+    const newSocket = io(SERVER_URL, {
+      transports: ['websocket'],
+      upgrade: false
+    });
+    setSocket(newSocket);
 
-    socket.on('connect', () => {
-      socket.emit('register', username);
+    newSocket.on('connect', () => {
+      newSocket.emit('register', { username, previousNumber });
     });
 
-    socket.on('registered', (data) => {
-      setUser({ myNumber: data.number, username });
+    newSocket.on('registered', (data) => {
+      const newUser = { myNumber: data.number, username };
+      setUser(newUser);
+      localStorage.setItem('lets_talk_user', JSON.stringify(newUser));
     });
 
-    socket.on('connect_error', () => {
+    newSocket.on('connect_error', () => {
       alert('Failed to connect to signaling server. Please check if the backend is running.');
-      socketRef.current = null;
+      setSocket(null);
     });
   };
+
+  useEffect(() => {
+    if (user && !socket) {
+      connectSocket(user.username, user.myNumber);
+    }
+  }, []); // Run once on mount to restore session
 
   // Global socket cleanup
   useEffect(() => {
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      if (socket) {
+        socket.disconnect();
       }
     };
-  }, []);
+  }, [socket]);
 
   return (
     <div className="app-container" style={{ width: '100%', height: '100vh' }}>
       {!user ? (
-        <ConnectUser onRegister={handleRegister} />
+        <ConnectUser onRegister={(username) => connectSocket(username)} />
+      ) : !socket ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>Reconnecting...</div>
       ) : (
-        <Dashboard user={user} socket={socketRef.current} />
+        <Dashboard user={user} socket={socket} />
       )}
     </div>
   );

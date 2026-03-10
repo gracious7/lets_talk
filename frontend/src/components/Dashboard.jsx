@@ -143,7 +143,7 @@ export default function Dashboard({ user, socket }) {
               >
                 <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center' }}>
                   <div style={{ width: '48px', height: '48px', borderRadius: '14px', background: 'var(--gradient-premium)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0 }}>
-                    {chat.name[0]?.toUpperCase()}
+                    {chat.name && chat.name.length > 0 ? chat.name[0].toUpperCase() : chat.numbers[0][0]}
                   </div>
                   <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -164,7 +164,7 @@ export default function Dashboard({ user, socket }) {
 
         {/* Pinned Sign Out — always visible */}
         <div style={{ padding: '1rem', paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))', borderTop: '1px solid var(--border-subtle)', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
-          <button className="btn" style={{ width: '100%', padding: '0.75rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', borderRadius: '12px' }} onClick={() => window.location.reload()}>
+          <button className="btn" style={{ width: '100%', padding: '0.75rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', borderRadius: '12px' }} onClick={() => { localStorage.clear(); window.location.reload(); }}>
             <LogOut size={18} /> Sign Out
           </button>
         </div>
