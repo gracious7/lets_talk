@@ -3,13 +3,14 @@ import { MessagesSquare, Loader, Sparkles, ShieldCheck, Zap } from 'lucide-react
 
 export default function ConnectUser({ onRegister }) {
   const [username, setUsername] = useState('');
+  const [visibility, setVisibility] = useState('private');
   const [isRegistering, setIsRegistering] = useState(false);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!username.trim() || isRegistering) return;
     setIsRegistering(true);
-    onRegister(username.trim());
+    onRegister(username.trim(), visibility);
   };
 
   return (
@@ -46,6 +47,45 @@ export default function ConnectUser({ onRegister }) {
               disabled={isRegistering}
               autoFocus
             />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.8rem', fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+              Visibility Mode
+            </label>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button
+                type="button"
+                onClick={() => setVisibility('private')}
+                style={{
+                  flex: 1, padding: '1rem', borderRadius: '16px', fontWeight: 600,
+                  background: visibility === 'private' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                  color: visibility === 'private' ? 'white' : 'var(--text-muted)',
+                  border: visibility === 'private' ? '1px solid var(--primary-accent)' : '1px solid var(--border-bright)',
+                  transition: 'all 0.3s ease',
+                  cursor: 'pointer'
+                }}
+              >
+                Stay Private
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibility('public')}
+                style={{
+                  flex: 1, padding: '1rem', borderRadius: '16px', fontWeight: 600,
+                  background: visibility === 'public' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                  color: visibility === 'public' ? 'white' : 'var(--text-muted)',
+                  border: visibility === 'public' ? '1px solid var(--primary-accent)' : '1px solid var(--border-bright)',
+                  transition: 'all 0.3s ease',
+                  cursor: 'pointer'
+                }}
+              >
+                Go Public
+              </button>
+            </div>
+            <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              {visibility === 'private' ? "Private: People can only contact you via your number." : "Public: Appear in the feed to meet new people!"}
+            </p>
           </div>
 
           <button type="submit" className="btn btn-primary" style={{ padding: '1.2rem', borderRadius: '20px', fontSize: '1.1rem', fontWeight: 700 }} disabled={isRegistering}>

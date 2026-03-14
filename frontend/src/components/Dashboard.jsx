@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { LogOut, Plus, MessageSquare, Menu, X, User as UserIcon, Phone, Video, ChevronLeft, PhoneOff } from 'lucide-react';
+import { LogOut, Plus, MessageSquare, Menu, X, User as UserIcon, Phone, Video, ChevronLeft, PhoneOff, Globe, EyeOff } from 'lucide-react';
 import ChatInterface from './ChatInterface';
+import PublicFeed from './PublicFeed';
 import RingtoneSynth from '../utils/RingtoneSynth';
 
 export default function Dashboard({ user, socket }) {
@@ -10,9 +11,14 @@ export default function Dashboard({ user, socket }) {
   const [newChatNumbers, setNewChatNumbers] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  const [callState, setCallState] = useState('idle');
-  const [incomingCallData, setIncomingCallData] = useState(null);
+  const [activeTab, setActiveTab] = useState('private');
+  const [publicUsers, setPublicUsers] = useState([]);
+  const [visibility, setVisibility] = useState(user.visibility || 'private');
+
   const [activeCallType, setActiveCallType] = useState('video');
+
+  const [callPermissionRequest, setCallPermissionRequest] = useState(null); // { requesterNumber, requesterName }
+  const [callPermissionStatus, setCallPermissionStatus] = useState('idle'); // idle, requesting, granted, denied
 
   const ringSynthRef = useRef(new RingtoneSynth());
   const { myNumber, username } = user;
@@ -46,15 +52,39 @@ export default function Dashboard({ user, socket }) {
     };
 
     socket.on('receive-message', handleReceiveMessage);
-    socket.on('incoming-call', handleIncomingCall);
     socket.on('call-ended', handleCallEnded);
     socket.on('peer-disconnected', handlePeerDisconnected);
+
+    const handleCallPermissionRequest = (data) => {
+      setCallPermissionRequest(data);
+    };
+
+    const handleCallPermissionResponse = (data) => {
+      if (data.accepted) {
+        setCallPermissionStatus('granted');
+        setTimeout(() => setCallPermissionStatus('idle'), 5000);
+      } else {
+        setCallPermissionStatus('denied');
+        setTimeout(() => setCallPermissionStatus('idle'), 5000);
+      }
+    };
+
+    socket.on('call-permission-request', handleCallPermissionRequest);
+    socket.on('call-permission-response', handleCallPermissionResponse);
+
+    const handlePublicUsersUpdate = (users) => {
+      setPublicUsers(users.filter(u => u.number !== myNumber));
+    };
+    socket.on('public-users-update', handlePublicUsersUpdate);
 
     return () => {
       socket.off('receive-message', handleReceiveMessage);
       socket.off('incoming-call', handleIncomingCall);
       socket.off('call-ended', handleCallEnded);
       socket.off('peer-disconnected', handlePeerDisconnected);
+      socket.off('public-users-update', handlePublicUsersUpdate);
+      socket.off('call-permission-request', handleCallPermissionRequest);
+      socket.off('call-permission-response', handleCallPermissionResponse);
       ringSynthRef.current.stop();
     };
   }, [myNumber, socket]);
@@ -98,6 +128,23 @@ export default function Dashboard({ user, socket }) {
     if (window.innerWidth <= 768) setSidebarOpen(false);
   };
 
+  const handleStartPublicChat = (publicUser) => {
+    const newChat = {
+      id: Date.now(),
+      numbers: [publicUser.number],
+      name: publicUser.username,
+      lastMessage: 'Started from public feed',
+      timestamp: Date.now(),
+      isPublicChat: true
+    };
+    setActiveChats((prev) => {
+      const existing = prev.find(chat => chat.numbers.includes(publicUser.number));
+      return existing ? prev : [newChat, ...prev];
+    });
+    setCurrentChat(newChat);
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+  };
+
   const rejectCall = () => {
     if (incomingCallData) {
       socket.emit('reject-call', { targetNumber: incomingCallData.callerNumber });
@@ -120,6 +167,16 @@ export default function Dashboard({ user, socket }) {
     setIncomingCallData(null);
   };
 
+  const handlePermissionResponse = (accepted) => {
+    if (callPermissionRequest) {
+      socket.emit('call-permission-response', {
+        targetNumber: callPermissionRequest.requesterNumber,
+        accepted
+      });
+    }
+    setCallPermissionRequest(null);
+  };
+
   return (
     <div className="dashboard-container">
       {/* Sidebar Section */}
@@ -129,13 +186,58 @@ export default function Dashboard({ user, socket }) {
             <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'white' }}>Lets Talk</h1>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{myNumber} • {username}</p>
           </div>
-          <button className="btn btn-primary btn-icon-only" onClick={() => setShowNewChatModal(true)}>
-            <Plus size={24} />
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              className="btn btn-icon-only"
+              style={{ background: visibility === 'public' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)', color: visibility === 'public' ? 'white' : 'var(--text-dim)', transition: 'all 0.3s' }}
+              onClick={() => {
+                const newVis = visibility === 'public' ? 'private' : 'public';
+                setVisibility(newVis);
+                socket.emit('set-visibility', { visibility: newVis });
+              }}
+              title={visibility === 'public' ? 'Go Private' : 'Go Public'}
+            >
+               {visibility === 'public' ? <Globe size={20} /> : <EyeOff size={20} />}
+            </button>
+            <button className="btn btn-primary btn-icon-only" onClick={() => setShowNewChatModal(true)}>
+              <Plus size={24} />
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', padding: '0.5rem 1rem', borderBottom: '1px solid var(--border-subtle)', gap: '1rem', flexShrink: 0 }}>
+          <button
+            style={{
+              flex: 1, padding: '0.5rem', background: 'transparent', border: 'none',
+              borderBottom: activeTab === 'private' ? '2px solid var(--primary-accent)' : '2px solid transparent',
+              color: activeTab === 'private' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s'
+            }}
+            onClick={() => { setActiveTab('private'); setCurrentChat(null); }}
+          >
+            Private
+          </button>
+          <button
+            style={{
+              flex: 1, padding: '0.5rem', background: 'transparent', border: 'none',
+              borderBottom: activeTab === 'public' ? '2px solid var(--primary-accent)' : '2px solid transparent',
+              color: activeTab === 'public' ? 'white' : 'var(--text-muted)',
+              fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s'
+            }}
+            onClick={() => { setActiveTab('public'); setCurrentChat(null); }}
+          >
+            Public
           </button>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem', minHeight: 0 }}>
-          {activeChats.length === 0 ? (
+          {activeTab === 'public' ? (
+            <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-dim)' }}>
+              <Globe size={48} style={{ opacity: 0.1, marginBottom: '1rem', display: 'inline-block' }} />
+              <p style={{ marginBottom: '1rem' }}>View the public feed in the main area.</p>
+              <button className="btn btn-primary" style={{ padding: '0.8rem 1.5rem', borderRadius: '20px' }} onClick={() => { setCurrentChat(null); if (window.innerWidth <= 768) setSidebarOpen(false); }}>Go to Feed</button>
+            </div>
+          ) : activeChats.length === 0 ? (
             <div style={{ padding: '3rem 1rem', textAlign: 'center', color: 'var(--text-dim)' }}>
               <MessageSquare size={48} style={{ opacity: 0.1, marginBottom: '1rem' }} />
               <p>No chats yet...</p>
@@ -212,6 +314,8 @@ export default function Dashboard({ user, socket }) {
               />
             </div>
           </div>
+        ) : activeTab === 'public' ? (
+          <PublicFeed users={publicUsers} onStartChat={handleStartPublicChat} />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '2rem' }}>
             <button
@@ -251,6 +355,33 @@ export default function Dashboard({ user, socket }) {
               {activeCallType === 'video' ? <Video size={32} /> : <Phone size={32} />}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Call Permission Request Overlay (Receiver) */}
+      {callPermissionRequest && (
+        <div className="glass animate-slide-up" style={{ position: 'fixed', bottom: '2rem', right: '2rem', zIndex: 3000, padding: '2rem', borderRadius: '24px', maxWidth: '350px', border: '1px solid var(--primary-accent)', background: 'rgba(0,0,0,0.95)' }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.5rem' }}>Call Request</h3>
+          <p style={{ color: 'var(--text-muted)', marginBottom: '1.5rem', fontSize: '0.95rem' }}>
+            <span style={{ color: 'white', fontWeight: 600 }}>{callPermissionRequest.requesterName}</span> wants to unlock calls with you. Allow?
+          </p>
+          <div style={{ display: 'flex', gap: '1rem' }}>
+            <button className="btn" style={{ flex: 1, padding: '0.8rem', background: 'rgba(255,255,255,0.05)' }} onClick={() => handlePermissionResponse(false)}>Deny</button>
+            <button className="btn btn-primary" style={{ flex: 1, padding: '0.8rem' }} onClick={() => handlePermissionResponse(true)}>Allow</button>
+          </div>
+        </div>
+      )}
+
+      {/* Call Permission Status Toast (Sender) */}
+      {callPermissionStatus !== 'idle' && (
+        <div className="glass animate-slide-up" style={{
+          position: 'fixed', top: '2rem', left: '50%', transform: 'translateX(-50%)', zIndex: 3000,
+          padding: '1rem 2rem', borderRadius: '99px',
+          border: `1px solid ${callPermissionStatus === 'granted' ? 'var(--success)' : 'var(--danger)'}`,
+          background: 'rgba(0,0,0,0.9)', color: callPermissionStatus === 'granted' ? 'var(--success)' : 'var(--danger)',
+          fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem'
+        }}>
+          {callPermissionStatus === 'granted' ? '✓ Permission Granted!' : '✕ Permission Denied'}
         </div>
       )}
 

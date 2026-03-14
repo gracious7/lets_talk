@@ -385,7 +385,7 @@ export default class WebRTCManager {
   }
 
   _startStatsPolling() {
-    if (this.statsInterval) return; // Already polling
+    if (this.statsInterval) return; // Already polling 
 
     this.statsInterval = setInterval(async () => {
       if (!this.pc || this.isDestroyed) {

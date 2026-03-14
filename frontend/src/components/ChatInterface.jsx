@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Smile, Paperclip, Phone, Video, X, Mic, MicOff, VideoOff, PhoneOff, User as UserIcon, MoreVertical, ChevronLeft, Loader, WifiOff, Wifi } from 'lucide-react';
+import { Send, Smile, Paperclip, Phone, Video, X, Mic, MicOff, VideoOff, PhoneOff, User as UserIcon, MoreVertical, ChevronLeft, Loader, WifiOff, Wifi, Lock } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import RingtoneSynth from '../utils/RingtoneSynth';
 import WebRTCManager from '../utils/WebRTCManager';
@@ -13,6 +13,21 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+
+  const isPublicChat = chat.isPublicChat;
+  const [receivedMessageCount, setReceivedMessageCount] = useState(0);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [permissionPending, setPermissionPending] = useState(false);
+
+  useEffect(() => {
+    if (isPublicChat) {
+      socket.emit('get-message-count', { peerNumber: primaryTarget }, (response) => {
+        if (response) setReceivedMessageCount(response.count || 0);
+      });
+    }
+  }, [isPublicChat, primaryTarget, socket]);
+
+  const callsLocked = isPublicChat && receivedMessageCount < 20 && !permissionGranted;
 
   const [callState, setCallState] = useState('idle'); // idle, calling, connecting, in-call
   const [activeCallType, setActiveCallType] = useState('video');
@@ -287,8 +302,22 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
 
     const handleReceiveMessage = (data) => {
       if (data.senderNumber === primaryTarget) {
+        if (data.messageCount !== undefined) {
+          setReceivedMessageCount(data.messageCount);
+        } else {
+          setReceivedMessageCount(prev => prev + 1);
+        }
         const newMsg = { text: data.message, sender: 'them', time: new Date() };
         setMessages(prev => [...prev, newMsg]);
+      }
+    };
+
+    const handleCallPermissionResponse = (data) => {
+      if (data.responderNumber === primaryTarget) {
+        setPermissionPending(false);
+        if (data.accepted) {
+          setPermissionGranted(true);
+        }
       }
     };
 
@@ -299,6 +328,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
     socket.on('call-rejected', handleCallRejected);
     socket.on('call-ended', handleCallEnded);
     socket.on('receive-message', handleReceiveMessage);
+    socket.on('call-permission-response', handleCallPermissionResponse);
 
     return () => {
       socket.off('call-offer', handleCallOffer);
@@ -308,6 +338,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
       socket.off('call-rejected', handleCallRejected);
       socket.off('call-ended', handleCallEnded);
       socket.off('receive-message', handleReceiveMessage);
+      socket.off('call-permission-response', handleCallPermissionResponse);
     };
     // IMPORTANT: Only socket & primaryTarget as deps — callState/activeCallType
     // are accessed via refs to avoid re-subscribe cycles
@@ -433,12 +464,32 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
           </div>
         </div>
         <div style={{ display: 'flex', gap: '0.6rem' }}>
-          <button className="btn btn-icon-only glass" onClick={() => initiateCall('audio')} style={{ width: '44px', height: '44px', borderRadius: '12px' }}>
-            <Phone size={20} color="var(--primary-accent)" />
-          </button>
-          <button className="btn btn-icon-only btn-primary" onClick={() => initiateCall('video')} style={{ width: '44px', height: '44px', borderRadius: '12px' }}>
-            <Video size={20} />
-          </button>
+          {callsLocked ? (
+            <div
+              style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.05)', borderRadius: '12px', padding: '0 1rem', gap: '0.6rem', border: '1px solid var(--border-subtle)', cursor: 'pointer', transition: 'all 0.3s' }}
+              title={permissionPending ? 'Request Pending...' : `Chat ${20 - receivedMessageCount} more messages to unlock calls, or click to request permission`}
+              onClick={() => {
+                if (!permissionPending) {
+                  setPermissionPending(true);
+                  socket.emit('request-call-permission', { targetNumber: primaryTarget });
+                }
+              }}
+            >
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600 }}>
+                {permissionPending ? 'Requested' : `${receivedMessageCount}/20`}
+              </span>
+              {permissionPending ? <Loader size={14} className="spin" color="var(--primary-accent)" /> : <Lock size={14} color="var(--text-muted)" />}
+            </div>
+          ) : (
+            <>
+              <button className="btn btn-icon-only glass" onClick={() => initiateCall('audio')} style={{ width: '44px', height: '44px', borderRadius: '12px', animation: isPublicChat ? 'pulse-glow 2s 1' : 'none' }}>
+                <Phone size={20} color="var(--primary-accent)" />
+              </button>
+              <button className="btn btn-icon-only btn-primary" onClick={() => initiateCall('video')} style={{ width: '44px', height: '44px', borderRadius: '12px', animation: isPublicChat ? 'pulse-glow 2s 1' : 'none' }}>
+                <Video size={20} />
+              </button>
+            </>
+          )}
           <button className="btn btn-icon-only glass" style={{ width: '44px', height: '44px', borderRadius: '12px' }}>
             <MoreVertical size={20} />
           </button>

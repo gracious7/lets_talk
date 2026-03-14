@@ -29,6 +29,19 @@ const numbersToSockets = {};
 // Track active calls: number -> Set of numbers they're in a call with
 const activeCalls = {};
 
+// Map to track message counts: senderNumber -> targetNumber -> count
+const messageCounts = {};
+
+function getRandomColor() {
+  const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD', '#D4A5A5', '#9B59B6', '#3498DB'];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function broadcastPublicUsers() {
+  const publicUsers = Object.values(users).filter(u => u.visibility === 'public');
+  io.emit('public-users-update', publicUsers);
+}
+
 function generateNumber() {
   let num;
   do {
@@ -51,12 +64,14 @@ io.on('connection', (socket) => {
 
   // ─── Registration ──────────────────────────────────────────
   socket.on('register', (data) => {
-    let username, previousNumber;
+    let username, previousNumber, visibility;
     if (typeof data === 'string') {
       username = data;
+      visibility = 'private';
     } else {
       username = data.username;
       previousNumber = data.previousNumber;
+      visibility = data.visibility || 'private';
     }
 
     // If this socket was already registered, clean up the old mapping
@@ -77,11 +92,13 @@ io.on('connection', (socket) => {
       number = generateNumber();
     }
 
-    users[socket.id] = { number, username };
+    const avatarColor = getRandomColor();
+    users[socket.id] = { number, username, visibility, avatarColor };
     numbersToSockets[number] = socket.id;
 
     socket.emit('registered', { number });
-    console.log(`User ${username} (${socket.id}) registered with number ${number}`);
+    console.log(`User ${username} (${socket.id}) registered with number ${number}, visibility: ${visibility}`);
+    broadcastPublicUsers();
   });
 
   // ─── Chat Message Relay ────────────────────────────────────
@@ -90,13 +107,57 @@ io.on('connection', (socket) => {
     if (!senderData) return;
 
     const targets = getTargetSocketIds(payload.targetNumbers || payload.targetNumber);
-    targets.forEach(({ socketId }) => {
+    targets.forEach(({ socketId, number }) => {
+      // Track message count
+      if (!messageCounts[senderData.number]) messageCounts[senderData.number] = {};
+      if (!messageCounts[senderData.number][number]) messageCounts[senderData.number][number] = 0;
+      messageCounts[senderData.number][number]++;
+
       io.to(socketId).emit('receive-message', {
         senderNumber: senderData.number,
         senderName: senderData.username,
-        message: payload.message
+        message: payload.message,
+        messageCount: messageCounts[senderData.number][number]
       });
     });
+  });
+
+  socket.on('set-visibility', (payload) => {
+    if (users[socket.id]) {
+      users[socket.id].visibility = payload.visibility;
+      broadcastPublicUsers();
+    }
+  });
+
+  socket.on('get-message-count', (payload, callback) => {
+    const myData = users[socket.id];
+    if (!myData) return;
+    const count = (messageCounts[payload.peerNumber] && messageCounts[payload.peerNumber][myData.number]) || 0;
+    if (typeof callback === 'function') {
+      callback({ count });
+    } else {
+      socket.emit('message-count', { peerNumber: payload.peerNumber, count });
+    }
+  });
+
+  socket.on('request-call-permission', (payload) => {
+    const targetSocketId = numbersToSockets[payload.targetNumber];
+    if (targetSocketId) {
+      socket.to(targetSocketId).emit('call-permission-request', {
+        requesterNumber: users[socket.id]?.number,
+        requesterName: users[socket.id]?.username
+      });
+    }
+  });
+
+  socket.on('call-permission-response', (payload) => {
+    const targetSocketId = numbersToSockets[payload.targetNumber];
+    if (targetSocketId) {
+      socket.to(targetSocketId).emit('call-permission-response', {
+        responderNumber: users[socket.id]?.number,
+        accepted: payload.accepted
+      });
+    }
   });
 
   // ─── WebRTC Signaling Relay ────────────────────────────────
@@ -229,7 +290,9 @@ io.on('connection', (socket) => {
 
       // Free up the number
       delete numbersToSockets[myNumber];
+      const wasPublic = users[socket.id]?.visibility === 'public';
       delete users[socket.id];
+      if (wasPublic) broadcastPublicUsers();
     }
   });
 });

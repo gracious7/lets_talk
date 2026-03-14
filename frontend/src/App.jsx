@@ -13,7 +13,7 @@ function App() {
   const [socket, setSocket] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('disconnected'); // connected, disconnected, reconnecting
 
-  const connectSocket = (username, previousNumber = null) => {
+  const connectSocket = (username, visibility = 'private', previousNumber = null) => {
     if (socket) return;
     const newSocket = io(SERVER_URL, {
       transports: ['websocket'],
@@ -33,11 +33,11 @@ function App() {
       console.log('[Socket] Connected:', newSocket.id);
       setConnectionStatus('connected');
       // Always re-register on connect (handles both initial + reconnect)
-      newSocket.emit('register', { username, previousNumber });
+      newSocket.emit('register', { username, visibility, previousNumber });
     });
 
     newSocket.on('registered', (data) => {
-      const newUser = { myNumber: data.number, username };
+      const newUser = { myNumber: data.number, username, visibility };
       setUser(newUser);
       localStorage.setItem('lets_talk_user', JSON.stringify(newUser));
     });
@@ -71,7 +71,7 @@ function App() {
 
   useEffect(() => {
     if (user && !socket) {
-      connectSocket(user.username, user.myNumber);
+      connectSocket(user.username, user.visibility || 'private', user.myNumber);
     }
   }, []); // Run once on mount to restore session
 
@@ -87,7 +87,7 @@ function App() {
   return (
     <div className="app-container" style={{ width: '100%', height: '100vh' }}>
       {!user ? (
-        <ConnectUser onRegister={(username) => connectSocket(username)} />
+        <ConnectUser onRegister={(username, visibility) => connectSocket(username, visibility)} />
       ) : !socket ? (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>Reconnecting...</div>
       ) : (
