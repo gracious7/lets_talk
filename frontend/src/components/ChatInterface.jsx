@@ -1,22 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Smile, Paperclip, Phone, Video, X, Mic, MicOff, VideoOff, PhoneOff, User as UserIcon, MoreVertical, ChevronLeft, Loader } from 'lucide-react';
+import { Send, Smile, Paperclip, Phone, Video, X, Mic, MicOff, VideoOff, PhoneOff, User as UserIcon, MoreVertical, ChevronLeft, Loader, WifiOff, Wifi } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import RingtoneSynth from '../utils/RingtoneSynth';
-
-const ICE_SERVERS = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-};
-
-const AUDIO_CONSTRAINTS = {
-  echoCancellation: true,
-  noiseSuppression: true, 
-  autoGainControl: true
-};
+import WebRTCManager from '../utils/WebRTCManager';
 
 export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, onMessageSent, onBack }) {
   const { numbers: targetNumbers, name: chatName } = chat;
   const primaryTarget = targetNumbers[0];
-  
+
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -26,22 +17,27 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
   const [callState, setCallState] = useState('idle'); // idle, calling, connecting, in-call
   const [activeCallType, setActiveCallType] = useState('video');
   const [callDuration, setCallDuration] = useState(0);
+  const [connectionQuality, setConnectionQuality] = useState('good'); // good, fair, poor, reconnecting
 
-  const pcRef = useRef();
-  const localStreamRef = useRef();
-  const remoteStreamRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const audioSourceRef = useRef(null);
-  const audioGainNodeRef = useRef(null);
+  // Refs — these avoid re-registering socket listeners on every state change
+  const callStateRef = useRef('idle');
+  const activeCallTypeRef = useRef('video');
+  const managerRef = useRef(null);
   const ringSynthRef = useRef(new RingtoneSynth());
-  
+
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const messagesEndRef = useRef();
-  const timerIntervalRef = useRef();
+  const remoteAudioRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const timerIntervalRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Load chat history
+  // Keep refs in sync with state
+  useEffect(() => { callStateRef.current = callState; }, [callState]);
+  useEffect(() => { activeCallTypeRef.current = activeCallType; }, [activeCallType]);
+
+  // ─── Chat History ──────────────────────────────────────────
+
   useEffect(() => {
     const participants = [myNumber, ...targetNumbers].sort();
     const storageKey = `chat_history_${participants.join('_')}`;
@@ -49,210 +45,243 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
     if (stored) setMessages(JSON.parse(stored));
   }, [myNumber, targetNumbers]);
 
-  // Save chat history
   useEffect(() => {
     const participants = [myNumber, ...targetNumbers].sort();
     const storageKey = `chat_history_${participants.join('_')}`;
     localStorage.setItem(storageKey, JSON.stringify(messages));
   }, [messages, myNumber, targetNumbers]);
 
-  // Auto-scroll to bottom on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Audio track cleanup on unmount
+  // ─── Cleanup on unmount ────────────────────────────────────
+
   useEffect(() => {
     return () => {
       ringSynthRef.current.stop();
+      destroyManager();
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     };
   }, []);
 
-  // Bind video streams properly when they mount during in-call state
+  // ─── Bind video elements when in-call ──────────────────────
+
   useEffect(() => {
-    if (callState === 'in-call') {
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
+    if (callState === 'in-call' && managerRef.current) {
+      if (localVideoRef.current && managerRef.current.localStream) {
+        localVideoRef.current.srcObject = managerRef.current.localStream;
       }
-      if (remoteVideoRef.current && remoteStreamRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      if (remoteVideoRef.current && managerRef.current.remoteStream) {
+        remoteVideoRef.current.srcObject = managerRef.current.remoteStream;
+      }
+      if (remoteAudioRef.current && managerRef.current.remoteStream) {
+        remoteAudioRef.current.srcObject = managerRef.current.remoteStream;
       }
     }
   }, [callState, isVideoOff, activeCallType]);
 
-  const initAudioContext = async () => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
-      audioGainNodeRef.current = audioContextRef.current.createGain();
-      audioGainNodeRef.current.connect(audioContextRef.current.destination);
+  // ─── WebRTC Manager Lifecycle ──────────────────────────────
+
+  const createManager = useCallback(() => {
+    if (managerRef.current) {
+      managerRef.current.destroy();
     }
-    if (audioContextRef.current.state === 'suspended') {
-      try { await audioContextRef.current.resume(); } catch (e) { console.warn('Could not resume AudioContext', e); }
-    }
-  };
+    const manager = new WebRTCManager();
 
-  const setupAudioPipeline = (stream) => {
-    if (!audioContextRef.current || !stream.getAudioTracks().length) return;
-    if (audioSourceRef.current) audioSourceRef.current.disconnect();
-    audioSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-    audioGainNodeRef.current.gain.value = 1.0; 
-    audioSourceRef.current.connect(audioGainNodeRef.current);
-  };
-
-  const optimizeSDP = (sdp) => {
-    let lines = sdp.split('\r\n');
-    return lines.map(line => {
-      if (line.includes('a=fmtp:111')) {
-        return line + ';maxaveragebitrate=64000;stereo=0;sprop-stereo=0;useinbandfec=1;usedtx=0;cbr=1;ptime=20';
-      }
-      return line;
-    }).join('\r\n');
-  };
-
-  const pendingCandidatesRef = useRef([]);
-
-  const startWebRTC = useCallback(async (isInitiator, type, existingOffer = null) => {
-    try {
-      await initAudioContext();
-      const requiresVideo = type === 'video';
-      setIsVideoOff(!requiresVideo);
-      setActiveCallType(type);
-
-      // Get media FIRST — before any state updates or DOM changes
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: requiresVideo,
-        audio: AUDIO_CONSTRAINTS,
-      });
-      localStreamRef.current = stream;
-
-      // Assign to local video element immediately (works if overlay is already rendered)
+    manager.onLocalStream = (stream) => {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+    };
 
-      // Now transition to connecting state (overlay renders)
-      setCallState('connecting');
+    manager.onRemoteStream = (stream) => {
+      // Bind to BOTH video and audio elements for maximum compatibility
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = stream;
+      }
+    };
 
-      const pc = new RTCPeerConnection(ICE_SERVERS);
-      pcRef.current = pc;
-      pendingCandidatesRef.current = [];
-
-      const remoteStream = new MediaStream();
-      remoteStreamRef.current = remoteStream;
-
-      // Track reception — most critical fix
-      pc.ontrack = (event) => {
-        remoteStream.addTrack(event.track);
-        ringSynthRef.current.stop();
-
-        // Bind remote video element immediately
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-        }
-
-        if (event.track.kind === 'audio') {
-          setupAudioPipeline(remoteStream);
-        }
-
-        // Transition to in-call on first track
+    manager.onTrackReceived = (kind) => {
+      ringSynthRef.current.stop();
+      if (callStateRef.current !== 'in-call') {
         setCallState('in-call');
         startTimer();
-      };
-
-      // Add local tracks to peer connection
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-      if (isInitiator) {
-        const offer = await pc.createOffer();
-        const optimizedOffer = new RTCSessionDescription({ type: 'offer', sdp: optimizeSDP(offer.sdp) });
-        await pc.setLocalDescription(optimizedOffer);
-        socket.emit('call-offer', { targetNumbers, offer: optimizedOffer, callType: type });
-      } else if (existingOffer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(existingOffer));
-        // Drain any buffered candidates
-        for (const c of pendingCandidatesRef.current) {
-          try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
-        }
-        pendingCandidatesRef.current = [];
-        const answer = await pc.createAnswer();
-        const optimizedAnswer = new RTCSessionDescription({ type: 'answer', sdp: optimizeSDP(answer.sdp) });
-        await pc.setLocalDescription(optimizedAnswer);
-        socket.emit('call-answer', { targetNumbers: [primaryTarget], answer: optimizedAnswer });
       }
+    };
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit('ice-candidate', { targetNumbers: isInitiator ? targetNumbers : [primaryTarget], candidate: event.candidate });
+    manager.onConnectionStateChange = (state) => {
+      switch (state) {
+        case 'connecting':
+          setConnectionQuality('good');
+          break;
+        case 'connected':
+          setConnectionQuality('good');
+          if (callStateRef.current === 'connecting') {
+            // We might not have tracks yet, but we are connected
+          }
+          break;
+        case 'reconnecting':
+          setConnectionQuality('reconnecting');
+          break;
+        case 'failed':
+          setConnectionQuality('poor');
+          // If we can't recover, end the call after a moment
+          setTimeout(() => {
+            if (managerRef.current && managerRef.current.pc?.iceConnectionState === 'failed') {
+              endCall();
+            }
+          }, 10000);
+          break;
+        case 'closed':
+          endCallLocally();
+          break;
+      }
+    };
+
+    manager.onIceCandidate = (candidate) => {
+      socket.emit('ice-candidate', {
+        targetNumbers: manager.isInitiator ? targetNumbers : [primaryTarget],
+        candidate
+      });
+    };
+
+    manager.onNegotiationNeeded = (offer) => {
+      // ICE restart: send the new offer to the remote peer
+      socket.emit('call-offer', {
+        targetNumbers,
+        offer,
+        callType: activeCallTypeRef.current,
+        iceRestart: true
+      });
+    };
+
+    manager.onStatsUpdate = (stats) => {
+      if (stats.packetLoss > 10 || stats.roundTripTime > 500) {
+        setConnectionQuality('poor');
+      } else if (stats.packetLoss > 3 || stats.roundTripTime > 200) {
+        setConnectionQuality('fair');
+      } else {
+        if (connectionQuality !== 'reconnecting') {
+          setConnectionQuality('good');
         }
-      };
+      }
+    };
 
-    } catch (err) {
-      console.error('WebRTC Error:', err);
-      alert(`Could not start call. Error: ${err.message}`);
-      endCallLocally();
-    }
+    manager.onError = (err) => {
+      console.error('[ChatInterface] WebRTC error:', err);
+    };
+
+    managerRef.current = manager;
+    return manager;
   }, [socket, targetNumbers, primaryTarget]);
 
-  // Initiator: Just start ringing, don't start WebRTC yet
+  const destroyManager = () => {
+    if (managerRef.current) {
+      managerRef.current.destroy();
+      managerRef.current = null;
+    }
+  };
+
+  // ─── Call Flow: Initiator ──────────────────────────────────
+
   const initiateCall = (type) => {
     setActiveCallType(type);
     setCallState('calling');
+    setIsVideoOff(type !== 'video');
     ringSynthRef.current.playRingout();
     socket.emit('initiate-call', { targetNumbers, callType: type });
   };
 
-  // Receiver: Accepting happens in Dashboard, then we land here with autoAcceptData
+  const startWebRTCAsInitiator = useCallback(async (type) => {
+    try {
+      const manager = createManager();
+      await manager.initialize(type);
+      setCallState('connecting');
+      const offer = await manager.createOffer();
+      socket.emit('call-offer', { targetNumbers, offer, callType: type });
+    } catch (err) {
+      console.error('Failed to start WebRTC:', err);
+      alert(`Could not start call: ${err.message}`);
+      endCallLocally();
+    }
+  }, [createManager, socket, targetNumbers]);
+
+  // ─── Call Flow: Receiver ───────────────────────────────────
+
+  const startWebRTCAsReceiver = useCallback(async (offer, type) => {
+    try {
+      const manager = createManager();
+      await manager.initialize(type);
+      setCallState('connecting');
+      setIsVideoOff(type !== 'video');
+      const answer = await manager.handleOffer(offer);
+      socket.emit('call-answer', { targetNumbers: [primaryTarget], answer });
+    } catch (err) {
+      console.error('Failed to answer WebRTC:', err);
+      alert(`Could not accept call: ${err.message}`);
+      endCallLocally();
+    }
+  }, [createManager, socket, primaryTarget]);
+
+  // ─── Auto-accept incoming call (receiver landed in chat) ───
+
   useEffect(() => {
     if (autoAcceptData) {
-      // If we land here, the receiver already clicked "Accept"
       socket.emit('accept-call', { targetNumber: primaryTarget });
-      // We don't start WebRTC immediately as receiver, we wait for the Initiator's offer
       setCallState('connecting');
+      setActiveCallType(autoAcceptData.callType || 'video');
     }
   }, [autoAcceptData, primaryTarget, socket]);
 
+  // ─── Socket Event Handlers (registered ONCE) ──────────────
+
   useEffect(() => {
-    const handleCallOffer = (data) => {
-      // Only handle if we are expecting a call from this number or in connecting state
+    const handleCallOffer = async (data) => {
       if (data.callerNumber === primaryTarget) {
-        startWebRTC(false, data.callType, data.offer);
+        if (data.iceRestart && managerRef.current) {
+          // ICE restart: handle the new offer on existing manager
+          try {
+            const answer = await managerRef.current.handleOffer(data.offer);
+            socket.emit('call-answer', { targetNumbers: [primaryTarget], answer });
+          } catch (err) {
+            console.error('ICE restart offer handling failed:', err);
+          }
+        } else {
+          // Normal call offer — start WebRTC as receiver
+          startWebRTCAsReceiver(data.offer, data.callType);
+        }
       }
     };
 
     const handleCallAccepted = () => {
-      if (callState === 'calling') {
+      if (callStateRef.current === 'calling') {
         ringSynthRef.current.stop();
-        // Initiator: Now receiver has accepted, let's negotiate WebRTC
-        startWebRTC(true, activeCallType);
-      }
-    };
-
-    const handleIceCandidate = async (data) => {
-      if (pcRef.current && pcRef.current.remoteDescription) {
-        try {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-        } catch (e) {
-          console.error("ICE error", e);
-        }
-      } else {
-        // Buffer candidates that arrive before remoteDescription is set
-        pendingCandidatesRef.current.push(data.candidate);
+        startWebRTCAsInitiator(activeCallTypeRef.current);
       }
     };
 
     const handleCallAnswer = async (data) => {
-      if (pcRef.current) {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-        // Drain buffered ICE candidates now that remote description is set
-        for (const c of pendingCandidatesRef.current) {
-          try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
-        }
-        pendingCandidatesRef.current = [];
+      if (managerRef.current) {
+        await managerRef.current.handleAnswer(data.answer);
+      }
+    };
+
+    const handleIceCandidate = async (data) => {
+      if (managerRef.current) {
+        await managerRef.current.addIceCandidate(data.candidate);
       }
     };
 
     const handleCallRejected = () => {
-      alert("Call was rejected");
+      alert('Call was rejected');
+      endCallLocally();
+    };
+
+    const handleCallEnded = () => {
       endCallLocally();
     };
 
@@ -268,7 +297,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
     socket.on('call-answer', handleCallAnswer);
     socket.on('ice-candidate', handleIceCandidate);
     socket.on('call-rejected', handleCallRejected);
-    socket.on('call-ended', () => endCallLocally());
+    socket.on('call-ended', handleCallEnded);
     socket.on('receive-message', handleReceiveMessage);
 
     return () => {
@@ -277,44 +306,66 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
       socket.off('call-answer', handleCallAnswer);
       socket.off('ice-candidate', handleIceCandidate);
       socket.off('call-rejected', handleCallRejected);
-      socket.off('call-ended');
+      socket.off('call-ended', handleCallEnded);
       socket.off('receive-message', handleReceiveMessage);
     };
-  }, [socket, primaryTarget, callState, activeCallType, startWebRTC]);
+    // IMPORTANT: Only socket & primaryTarget as deps — callState/activeCallType
+    // are accessed via refs to avoid re-subscribe cycles
+  }, [socket, primaryTarget, startWebRTCAsInitiator, startWebRTCAsReceiver]);
+
+  // ─── Call Controls ─────────────────────────────────────────
+
+  const endCall = () => {
+    socket.emit('end-call', { targetNumbers });
+    endCallLocally();
+  };
 
   const endCallLocally = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    if (audioSourceRef.current) {
-      audioSourceRef.current.disconnect();
-      audioSourceRef.current = null;
-    }
+    destroyManager();
     setCallState('idle');
+    setConnectionQuality('good');
     stopTimer();
     ringSynthRef.current.stop();
   };
 
+  const toggleMute = () => {
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    if (managerRef.current) {
+      managerRef.current.setMuted(newMuted);
+    }
+  };
+
+  const toggleVideo = () => {
+    const newOff = !isVideoOff;
+    setIsVideoOff(newOff);
+    if (managerRef.current) {
+      managerRef.current.setVideoEnabled(!newOff);
+    }
+  };
+
+  // ─── Timer ─────────────────────────────────────────────────
+
   const startTimer = () => {
     setCallDuration(0);
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     timerIntervalRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
   };
 
   const stopTimer = () => {
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
   };
 
   const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
 
+  // ─── Chat ──────────────────────────────────────────────────
+
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
       const base64String = event.target.result;
@@ -339,8 +390,31 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
     }
   };
 
+  // ─── Connection quality indicator ──────────────────────────
+
+  const QualityIndicator = () => {
+    if (callState !== 'in-call') return null;
+    const colors = { good: 'var(--success)', fair: '#ffa500', poor: 'var(--danger)', reconnecting: '#ffa500' };
+    const labels = { good: 'Strong', fair: 'Weak', poor: 'Poor', reconnecting: 'Reconnecting...' };
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', padding: '0.3rem 0.8rem', borderRadius: '99px', fontSize: '0.75rem' }}>
+        {connectionQuality === 'reconnecting' ? (
+          <WifiOff size={14} color={colors[connectionQuality]} className="pulse-anim" />
+        ) : (
+          <Wifi size={14} color={colors[connectionQuality]} />
+        )}
+        <span style={{ color: colors[connectionQuality] }}>{labels[connectionQuality]}</span>
+      </div>
+    );
+  };
+
+  // ─── RENDER ────────────────────────────────────────────────
+
   return (
     <div className="enter-chat-transition" style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* Hidden audio element for reliable remote audio playback */}
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+
       {/* Header */}
       <div className="glass" style={{ height: '72px', display: 'flex', alignItems: 'center', padding: '0 1.5rem', justifyContent: 'space-between', zIndex: 100 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -371,7 +445,7 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
         </div>
       </div>
 
-      {/* Unique Message List */}
+      {/* Message List */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '2rem', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
         {messages.map((msg, i) => (
           <div key={i} className={`message-bubble ${msg.sender === 'me' ? 'message-mine' : 'message-theirs'}`}>
@@ -398,9 +472,9 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
             <Paperclip size={26} />
           </button>
           <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageUpload} />
-          <input 
-            type="text" 
-            className="input-premium" 
+          <input
+            type="text"
+            className="input-premium"
             style={{ flex: 1, borderRadius: '24px', padding: '0.9rem 1.4rem' }}
             placeholder="Write a message..."
             value={inputMessage}
@@ -417,41 +491,62 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
         )}
       </div>
 
-      {/* Call Overlays */}
-      {(callState !== 'idle') && (
-        <div className="animate-slide-up" style={{ position: 'fixed', inset: 0, zIndex: 2000, background: '#000', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      {/* ─── Call Overlay ─── */}
+      {callState !== 'idle' && (
+        <div className="animate-slide-up" style={{ position: 'absolute', inset: 0, zIndex: 2000, background: '#000', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
             {callState === 'in-call' ? (
               <>
-                {/* Remote video - NOT muted so audio plays */}
-                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', display: activeCallType === 'video' ? 'block' : 'none' }} />
-                
-                {/* Fallback Avatar for Audio Calls */}
+                {/* Remote video — NOT muted for audio playback through element */}
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  style={{
+                    width: '100%', height: '100%', objectFit: 'cover',
+                    display: activeCallType === 'video' ? 'block' : 'none'
+                  }}
+                />
+
+                {/* Audio-only avatar */}
                 {activeCallType !== 'video' && (
                   <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                    <div className="animate-scale-in" style={{ width: '160px', height: '160px', borderRadius: '50px', background: 'var(--gradient-premium)', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 30px 60px var(--primary-glow)' }}>
+                    <div className="pulse-anim" style={{ width: '160px', height: '160px', borderRadius: '50px', background: 'var(--gradient-premium)', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 30px 60px var(--primary-glow)' }}>
                       <UserIcon size={90} color="white" />
                     </div>
                   </div>
                 )}
 
-                {/* Local camera preview (top right pip) */}
-                {activeCallType === 'video' && (
-                  <div style={{ position: 'absolute', top: '2rem', right: '2rem', width: '130px', height: '190px', borderRadius: '24px', overflow: 'hidden', border: '2px solid rgba(255,255,255,0.15)', boxShadow: '0 20px 40px rgba(0,0,0,1)', display: isVideoOff ? 'none' : 'block' }}>
+                {/* Local camera PIP */}
+                {activeCallType === 'video' && !isVideoOff && (
+                  <div style={{ position: 'absolute', top: '2rem', right: '2rem', width: '130px', height: '190px', borderRadius: '24px', overflow: 'hidden', border: '2px solid rgba(255,255,255,0.15)', boxShadow: '0 20px 40px rgba(0,0,0,1)' }}>
                     <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
                 )}
-                <div style={{ position: 'absolute', top: '3rem', left: '0', right: '0', textAlign: 'center' }}>
+
+                {/* Top HUD: name + timer + quality */}
+                <div style={{ position: 'absolute', top: '3rem', left: 0, right: 0, textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
                   <h2 style={{ fontSize: '2.2rem', fontWeight: 800, textShadow: '0 4px 10px rgba(0,0,0,0.5)' }}>{chatName}</h2>
-                  <div className="call-timer" style={{ display: 'inline-block', marginTop: '1rem', background: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)', padding: '0.4rem 1.2rem', borderRadius: '99px' }}>
+                  <div className="call-timer" style={{ display: 'inline-block', background: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)', padding: '0.4rem 1.2rem', borderRadius: '99px' }}>
                     {formatTime(callDuration)}
                   </div>
+                  <QualityIndicator />
                 </div>
+
+                {/* Reconnecting overlay */}
+                {connectionQuality === 'reconnecting' && (
+                  <div className="reconnecting-overlay" style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
+                    <div style={{ textAlign: 'center' }}>
+                      <Loader className="spin" size={40} color="var(--primary-accent)" />
+                      <p style={{ marginTop: '1rem', fontSize: '1.2rem', color: 'var(--primary-accent)' }}>Reconnecting...</p>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div style={{ textAlign: 'center', width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                {/* Show local camera preview in small pip during calling/connecting too */}
-                {activeCallType === 'video' && localStreamRef.current && (
+                {/* Local camera PIP during calling/connecting */}
+                {activeCallType === 'video' && managerRef.current?.localStream && (
                   <div style={{ position: 'absolute', top: '2rem', right: '2rem', width: '120px', height: '160px', borderRadius: '20px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
                     <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
@@ -467,25 +562,17 @@ export default function ChatInterface({ chat, socket, myNumber, autoAcceptData, 
               </div>
             )}
           </div>
-          <div className="glass" style={{ height: '140px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '2.5rem', border: 'none', background: 'rgba(0,0,0,0.7)' }}>
-            <button className="btn btn-icon-only glass" onClick={() => {
-              if (localStreamRef.current) {
-                localStreamRef.current.getAudioTracks().forEach(t => t.enabled = isMuted);
-              }
-              setIsMuted(!isMuted);
-            }} style={{ width: '60px', height: '60px', borderRadius: '20px' }}>
-              {isMuted ? <MicOff size={28} /> : <Mic size={28} />}
+
+          {/* Call Controls Bar */}
+          <div className="glass" style={{ padding: '1.5rem', paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap', border: 'none', background: 'rgba(0,0,0,0.8)', zIndex: 2010 }}>
+            <button className="btn btn-icon-only glass" onClick={toggleMute} style={{ width: '64px', height: '64px', borderRadius: '20px' }}>
+              {isMuted ? <MicOff size={30} /> : <Mic size={30} />}
             </button>
-            <button className="btn btn-icon-only glass" onClick={() => {
-              if (localStreamRef.current) {
-                localStreamRef.current.getVideoTracks().forEach(t => t.enabled = isVideoOff);
-              }
-              setIsVideoOff(!isVideoOff);
-            }} style={{ width: '60px', height: '60px', borderRadius: '20px' }}>
-              {isVideoOff ? <VideoOff size={28} /> : <Video size={28} />}
+            <button className="btn btn-danger btn-icon-only" onClick={endCall} style={{ background: 'var(--danger)', width: '76px', height: '76px', borderRadius: '24px' }}>
+              <PhoneOff size={34} />
             </button>
-            <button className="btn btn-danger btn-icon-only" onClick={() => { socket.emit('end-call', { targetNumbers }); endCallLocally(); }} style={{ background: 'var(--danger)', width: '72px', height: '72px', borderRadius: '24px' }}>
-              <PhoneOff size={32} />
+            <button className="btn btn-icon-only glass" onClick={toggleVideo} style={{ width: '64px', height: '64px', borderRadius: '20px' }}>
+              {isVideoOff ? <VideoOff size={30} /> : <Video size={30} />}
             </button>
           </div>
         </div>

@@ -21,27 +21,40 @@ export default function Dashboard({ user, socket }) {
     const savedChats = localStorage.getItem(`active_chats_${myNumber}`);
     if (savedChats) setActiveChats(JSON.parse(savedChats));
 
-    socket.on('receive-message', (data) => {
+    const handleReceiveMessage = (data) => {
       updateActiveChats(data.senderNumber, data.message, data.senderName);
-    });
+    };
 
-    socket.on('incoming-call', (payload) => {
+    const handleIncomingCall = (payload) => {
       setIncomingCallData(payload);
       setActiveCallType(payload.callType || 'video');
       setCallState('ringing');
       ringSynthRef.current.playRingin();
-    });
+    };
 
-    socket.on('call-ended', () => {
+    const handleCallEnded = () => {
       setCallState('idle');
       setIncomingCallData(null);
       ringSynthRef.current.stop();
-    });
+    };
+
+    // Handle peer disconnect (server notifies us if the other user's socket dropped)
+    const handlePeerDisconnected = () => {
+      setCallState('idle');
+      setIncomingCallData(null);
+      ringSynthRef.current.stop();
+    };
+
+    socket.on('receive-message', handleReceiveMessage);
+    socket.on('incoming-call', handleIncomingCall);
+    socket.on('call-ended', handleCallEnded);
+    socket.on('peer-disconnected', handlePeerDisconnected);
 
     return () => {
-      socket.off('receive-message');
-      socket.off('incoming-call');
-      socket.off('call-ended');
+      socket.off('receive-message', handleReceiveMessage);
+      socket.off('incoming-call', handleIncomingCall);
+      socket.off('call-ended', handleCallEnded);
+      socket.off('peer-disconnected', handlePeerDisconnected);
       ringSynthRef.current.stop();
     };
   }, [myNumber, socket]);
@@ -97,7 +110,6 @@ export default function Dashboard({ user, socket }) {
   const acceptCall = () => {
     ringSynthRef.current.stop();
     setCallState('idle');
-    // Switch to the caller's chat and flag for auto-accept
     handleSelectChat({
       id: Date.now(),
       numbers: [incomingCallData.callerNumber],
@@ -122,7 +134,7 @@ export default function Dashboard({ user, socket }) {
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem', minHeight: 0 }}>
           {activeChats.length === 0 ? (
             <div style={{ padding: '3rem 1rem', textAlign: 'center', color: 'var(--text-dim)' }}>
               <MessageSquare size={48} style={{ opacity: 0.1, marginBottom: '1rem' }} />
@@ -162,10 +174,10 @@ export default function Dashboard({ user, socket }) {
           )}
         </div>
 
-        {/* Pinned Sign Out — always visible */}
-        <div style={{ padding: '1rem', paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))', borderTop: '1px solid var(--border-subtle)', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
-          <button className="btn" style={{ width: '100%', padding: '0.75rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', borderRadius: '12px' }} onClick={() => { localStorage.clear(); window.location.reload(); }}>
-            <LogOut size={18} /> Sign Out
+        {/* Pinned Sign Out */}
+        <div style={{ padding: '1.5rem', paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))', borderTop: '1px solid var(--border-subtle)', flexShrink: 0, background: 'rgba(0,0,0,0.3)', zIndex: 10 }}>
+          <button className="btn" style={{ width: '100%', padding: '1rem', background: 'rgba(255,255,255,0.05)', color: 'var(--text-main)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', borderRadius: '12px', fontSize: '1rem', zIndex: 10000 }} onClick={() => { localStorage.clear(); window.location.reload(); }}>
+            <LogOut size={20} /> Sign Out
           </button>
         </div>
       </div>
@@ -220,7 +232,7 @@ export default function Dashboard({ user, socket }) {
         )}
       </div>
 
-      {/* Modern Call Overlay */}
+      {/* Incoming Call Overlay */}
       {callState === 'ringing' && incomingCallData && (
         <div className="glass animate-slide-up" style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.9)' }}>
           <div style={{ textAlign: 'center' }}>

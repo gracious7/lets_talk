@@ -52,7 +52,7 @@ body {
 /* Dashboard Structural Container */
 .dashboard-container {
   display: flex;
-  height: 100dvh; /* Use dynamic viewport height for mobile browsers */
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   background: var(--bg-dark);
@@ -64,7 +64,7 @@ body {
   border-right: 1px solid var(--border-subtle);
   background: var(--bg-glass);
   flex-shrink: 0;
-  z-index: 200; /* Increased to ensure it stays above ChatInterface elements */
+  z-index: 200;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
@@ -164,6 +164,65 @@ body {
   to { opacity: 1; transform: scale(1); filter: blur(0); }
 }
 
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(0, 255, 136, 0.3); }
+  50% { box-shadow: 0 0 40px rgba(0, 255, 136, 0.6); }
+}
+
+@keyframes pulse-bg {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-scale {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Audio call avatar pulse animation */
+.pulse-anim {
+  animation: pulse-scale 2s ease-in-out infinite;
+}
+
+/* Slide up animation */
+.animate-slide-up {
+  animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Scale in animation */
+.animate-scale-in {
+  animation: scaleIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.8); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Reconnecting overlay */
+.reconnecting-overlay {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
   .sidebar-main { width: 100%; position: absolute; left: 0; top: 0; }
@@ -171,7 +230,7 @@ body {
   .mobile-only { display: flex !important; }
 }
 
-/* Call HUD - Minimal HUD Look */
+/* Call HUD */
 .call-hud-container {
   background: #000;
   display: flex;
